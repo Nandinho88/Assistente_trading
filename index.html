@@ -70,6 +70,20 @@
   .disclaimer b{color:var(--text)}
   details{margin-top:6px} summary{cursor:pointer;color:var(--accent);font-size:14px;padding:6px 0}
   details p{font-size:13px;color:var(--muted);line-height:1.55;margin:6px 0}
+  #cmpGo{width:100%;margin-top:12px;min-height:56px;font-size:17px;font-weight:700;color:#fff;background:var(--card2);
+    border:1px solid var(--accent);border-radius:16px}
+  #cmpGo:disabled{opacity:.6}
+  #cmpStatus{font-size:13px;color:var(--muted);margin-top:10px;min-height:18px}
+  table.cmp{width:100%;border-collapse:collapse;margin-top:10px;font-size:13.5px}
+  table.cmp th{font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);font-weight:600;text-align:right;padding:6px 4px;border-bottom:1px solid var(--line)}
+  table.cmp th:first-child,table.cmp td:first-child{text-align:left}
+  table.cmp td{padding:10px 4px;border-bottom:1px solid var(--line);text-align:right;vertical-align:middle}
+  table.cmp td small{display:block;color:var(--muted);font-size:11px;margin-top:2px}
+  table.cmp td b{font-size:14px}
+  .badge{display:inline-block;padding:4px 8px;border-radius:999px;font-size:11.5px;font-weight:700;white-space:nowrap}
+  .badge.up{background:rgba(46,204,143,.15);color:var(--up)}
+  .badge.down{background:rgba(255,92,108,.15);color:var(--down)}
+  .badge.neutral{background:rgba(245,184,75,.15);color:var(--neutral)}
   .spin{display:inline-block;width:18px;height:18px;border:3px solid rgba(255,255,255,.4);border-top-color:#fff;
     border-radius:50%;animation:s .8s linear infinite;vertical-align:-3px;margin-right:8px}
   @keyframes s{to{transform:rotate(360deg)}}
@@ -106,6 +120,17 @@
     </div>
     <p class="hint">Per i titoli europei aggiungi il suffisso della borsa: .DEX (Francoforte/Xetra), .LON (Londra), .PAR (Parigi), .AMS (Amsterdam). Non tutti i simboli sono disponibili.</p>
     <button id="go">ANALIZZA MERCATO</button>
+  </div>
+
+  <!-- CONFRONTO -->
+  <div class="card">
+    <h2>3 · Confronta strumenti</h2>
+    <label for="cmpSymbols">Da 2 a 5 simboli separati da virgola</label>
+    <input type="text" id="cmpSymbols" placeholder="es. SPY, AAPL, MSFT" autocomplete="off" autocapitalize="characters" autocorrect="off" spellcheck="false">
+    <button id="cmpGo">CONFRONTA</button>
+    <div id="cmpStatus"></div>
+    <div id="cmpOut"></div>
+    <p class="hint">Ogni strumento usa 1 delle 25 richieste gratuite giornaliere. Il piano gratuito ammette 5 richieste al minuto, quindi l'app aspetta circa 13 secondi tra uno strumento e l'altro. L'ordine della tabella è quello che hai scritto: <b>non indica quale sia il migliore</b>.</p>
   </div>
 
   <div id="error" role="alert"></div>
@@ -424,6 +449,78 @@ async function analyze(){
   }
 }
 
+/* ============ CONFRONTO ============ */
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+function cell(tr, text, cls){
+  const td = document.createElement("td"); td.textContent = text; if (cls) td.className = cls; tr.appendChild(td); return td;
+}
+
+async function compare(){
+  hideMessages();
+  const key = ($("apikey").value || store.get("ta_key") || "").trim();
+  const syms = Array.from(new Set(($("cmpSymbols").value || "").toUpperCase().split(/[\s,;]+/).filter(Boolean)));
+  if (!key){ showError({ title: "Manca la chiave dati", text: "Incolla la chiave gratuita Alpha Vantage nel riquadro 1 e tocca \"Salva chiave\"." }); return; }
+  if (syms.length < 2 || syms.length > 5){ showError({ title: "Servono da 2 a 5 simboli", text: "Scrivi i simboli separati da virgola, ad esempio SPY, AAPL, MSFT." }); return; }
+  const bad = syms.find(s => !/^[A-Z0-9.\-^=]{1,15}$/.test(s));
+  if (bad){ showError({ title: "Simbolo non valido", text: "\"" + bad + "\" contiene caratteri non ammessi. Usa solo lettere, numeri e . -" }); return; }
+  store.set("ta_key", key); store.set("ta_cmp", syms.join(", "));
+
+  const btn = $("cmpGo"), status = $("cmpStatus"), out = $("cmpOut");
+  btn.disabled = true; out.textContent = "";
+  const table = document.createElement("table"); table.className = "cmp";
+  const thead = document.createElement("tr");
+  ["Strumento", "Prezzo", "20 gg", "RSI", "Segnale"].forEach(t => { const th = document.createElement("th"); th.textContent = t; thead.appendChild(th); });
+  table.appendChild(thead); out.appendChild(table);
+
+  try {
+    for (let i = 0; i < syms.length; i++){
+      const s = syms[i];
+      status.textContent = "Carico " + s + " (" + (i + 1) + " di " + syms.length + ")…";
+      const tr = document.createElement("tr");
+      let stop = false, fresh = false;
+      try {
+        const r = await fetchDaily(s, key);
+        fresh = !r.cached;
+        const closes = r.rows.map(x => x.c), dates = r.rows.map(x => x.d);
+        const last = closes.length - 1;
+        const sma = calcSMA(closes, 20), rsi = calcRSI(closes, 14);
+        const sig = getSignal(closes[last], sma[last], rsi[last]);
+        const chg = closes[last] / closes[last - 20] - 1;
+        const c0 = document.createElement("td");
+        const b0 = document.createElement("b"); b0.textContent = s;
+        const sm = document.createElement("small"); sm.textContent = fmtShort(dates[last]);
+        c0.appendChild(b0); c0.appendChild(sm); tr.appendChild(c0);
+        cell(tr, num(closes[last], 2));
+        cell(tr, pct(chg), chg >= 0 ? "pos" : "neg");
+        cell(tr, num(rsi[last], 0));
+        const td = document.createElement("td"); const bd = document.createElement("span");
+        bd.className = "badge " + sig.code;
+        bd.textContent = sig.code === "up" ? "Rialzista" : sig.code === "down" ? "Debolezza" : "Neutro";
+        td.appendChild(bd); tr.appendChild(td);
+      } catch(err){
+        const c0 = cell(tr, s); c0.style.fontWeight = "700";
+        const td = cell(tr, (err && err.title) || "Errore"); td.colSpan = 4; td.style.color = "#ff8a96"; td.style.textAlign = "left";
+        if (err && err.title && err.title.indexOf("Limite") === 0) stop = true;
+      }
+      table.appendChild(tr);
+      if (stop){
+        if (i < syms.length - 1) status.textContent = "Limite raggiunto: gli strumenti rimanenti non sono stati analizzati.";
+        break;
+      }
+      if (fresh && i < syms.length - 1){
+        for (let t = 13; t > 0; t--){ status.textContent = "Attendo " + t + " s per rispettare il limite gratuito…"; await sleep(1000); }
+      }
+    }
+    if (!/Limite/.test(status.textContent)) status.textContent = "Confronto completato. Variazione \"20 gg\" = ultime 20 sedute. Solo a scopo informativo.";
+  } catch(err){
+    showError({ title: "Errore imprevisto", text: "Qualcosa è andato storto durante il confronto.", tech: String(err && err.message || err) });
+    status.textContent = "";
+  } finally {
+    btn.disabled = false;
+  }
+}
+
 /* ============ AVVIO ============ */
 (function init(){
   const k = store.get("ta_key"); if (k){ $("apikey").value = k; $("saveKey").textContent = "Chiave salvata ✓"; }
@@ -435,6 +532,8 @@ async function analyze(){
   });
   $("go").addEventListener("click", () => { store.set("ta_last", $("symbol").value.trim().toUpperCase()); analyze(); });
   $("symbol").addEventListener("keydown", e => { if (e.key === "Enter"){ e.preventDefault(); $("symbol").blur(); $("go").click(); } });
+  const lc = store.get("ta_cmp"); if (lc) $("cmpSymbols").value = lc;
+  $("cmpGo").addEventListener("click", compare);
   document.querySelectorAll(".chip").forEach(c => c.addEventListener("click", () => { $("symbol").value = c.dataset.s; }));
 })();
 </script>
